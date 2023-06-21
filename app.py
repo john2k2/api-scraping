@@ -30,11 +30,8 @@ def obtener_capitulos(url, capitulos_existentes=None):
 
             return capitulos
         else:
-            print('Error al realizar la solicitud HTTP a la URL: {}'.format(url))
             return []
     except Exception as e:
-        print(f'Error al realizar la solicitud HTTP a la URL: {url}')
-        print(f'Error: {e}')
         return []
 
 app = Flask(__name__)

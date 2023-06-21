@@ -1,57 +1,57 @@
-from urllib.parse import urljoin
-import requests
-from bs4 import BeautifulSoup
-
 from flask import Flask, request, jsonify
-
-def limpiar_texto(texto):
-    texto_limpio = ''.join(e for e in texto if e.isalnum() or e.isspace())
-    return texto_limpio.strip()
-
-def obtener_capitulos(url, capitulos_existentes=None):
-    if capitulos_existentes is None:
-        capitulos_existentes = []
-    
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            chapters = soup.find_all('li', class_='row')[:4]
-            capitulos = []
-
-            for chapter in chapters:
-                nombre_cap = limpiar_texto(chapter.find('h4').get_text())
-                link = urljoin(url, chapter.find('a')['href'])
-                
-                capitulo_existente = next((cap for cap in capitulos_existentes if cap['capitulo'] == nombre_cap), None)
-                leido = capitulo_existente['leido'] if capitulo_existente else False
-
-                capitulos.append({'capitulo': nombre_cap, 'url': link, 'leido': leido})
-
-            return capitulos
-        else:
-            return []
-    except Exception as e:
-        return []
+from bs4 import BeautifulSoup
+import requests
+import re
 
 app = Flask(__name__)
 
-@app.route('/')
-def inicio():
-    return "¡La aplicación está funcionando correctamente!"
+def limpiar_texto(texto):
+    return re.sub(r'[^\w\s]', '', texto).strip()
 
-@app.route('/capitulos', methods=['POST'])
-def capitulos():
-    data = request.get_json()
-    url = data.get('url')
-    capitulos_existentes = data.get('capitulos_existentes', [])
-    if not url:
-        return jsonify({'error': 'URL no proporcionada'}), 400
-    try:
-        capitulos = obtener_capitulos(url, capitulos_existentes)
-        return jsonify({'capitulos': capitulos}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+def obtener_capitulos(url):
+    response = requests.get(url)
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.content, 'html.parser')
+        capitulos = []
+        for row in soup.find_all('li', class_='row')[:4]:
+            nombre_cap = limpiar_texto(row.find('h4').get_text())
+            link = row.find('a').get('href')
+            capitulos.append({'capitulo': nombre_cap, 'url': link, 'leido': False})
+        return capitulos
+    else:
+        print(f'Error al realizar la solicitud HTTP a la URL: {url}')
+        return []
 
-if __name__ == "__main__":
+@app.route('/api', methods=['POST'])
+def post():
+    data = request.get_json() or {}
+    urls = data.get('urls') or []
+
+    animes = {}
+    for url in urls:
+        try:
+            capitulos = obtener_capitulos(url)
+            if len(capitulos) > 0:
+                response = requests.get(url)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    titulo = soup.find('h1')
+                    imagen = soup.find('div', class_='media-left cover-detail')
+
+                    nombre = limpiar_texto(titulo.get_text())
+                    imagen_url = imagen.find('img').get('src')
+
+                    anime = {
+                        'nombre': nombre,
+                        'imagenUrl': imagen_url,
+                        'link': capitulos,
+                    }
+                    animes[nombre] = anime
+        except Exception as e:
+            print(f'Error al obtener animes de la URL: {url}')
+            print(f'Error: {str(e)}')
+
+    return jsonify(list(animes.values())), 200
+
+if __name__ == '__main__':
     app.run(debug=False)

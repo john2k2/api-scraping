@@ -51,7 +51,7 @@ def post():
             print(f'Error al obtener animes de la URL: {url}')
             print(f'Error: {str(e)}')
 
-    return jsonify(list(animes.values())), 200
+    return jsonify({'Mangas': list(animes.values())}), 200
 
 if __name__ == '__main__':
     app.run(debug=False)

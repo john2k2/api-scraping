@@ -74,7 +74,7 @@ def obtener_animes(urls_listas):
                     imagen = soup.select_one('div.media-left.cover-detail')
 
                     nombre = limpiar_texto(titulo.text)
-                    imagen_url = "https://www.leercapitulo.com/" + urljoin(response.url, imagen.select_one('img')['src'])
+                    imagen_url =urljoin(response.url, imagen.select_one('img')['src'])
                     url = "https://www.leercapitulo.com/" + url
 
                     anime = {
@@ -109,7 +109,7 @@ def obtener_animes(urls_listas):
                         imagen = soup.select_one('div.media-left.cover-detail')
 
                         nombre = limpiar_texto(titulo.text)
-                        imagen_url = "https://www.leercapitulo.com/" + urljoin(response.url, imagen.select_one('img')['src'])
+                        imagen_url =  urljoin(response.url, imagen.select_one('img')['src'])
                         url = "https://www.leercapitulo.com/" + url
 
                         anime['nombre'] = nombre

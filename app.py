@@ -1,128 +1,167 @@
-from flask import Flask, request, jsonify
-import requests
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+from flask import Flask, jsonify, request
 from bs4 import BeautifulSoup
-import re
 from urllib.parse import urljoin
+import requests
+import re
+from flask_cors import CORS
+
+# Ruta al archivo de cuenta de servicio de Firebase
+firebase_credentials_path = './ytvideo.json'
+
+# Inicialización de Firebase Admin
+cred = credentials.Certificate(firebase_credentials_path)
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 app = Flask(__name__)
+CORS(app)  # Habilitar CORS en la aplicación
 
-@app.route('/anime-data', methods=['POST'])
-def post_anime_data():
-    data = request.json
-    urls_listas = data.get('urlsListas', [])
+def limpiarTexto(texto):
+    textoLimpio = re.sub(r'[^\w\s]', '', texto)
+    return textoLimpio.strip()
 
-    animes = obtener_animes(urls_listas)
-
-    response = {
-        'status': 200,
-        'body': {
-            'animes': animes
-        }
-    }
-    return jsonify(response)
-
-def limpiar_texto(texto):
-    texto_limpio = re.sub(r'[^\w\s]', '', texto)
-    return texto_limpio.strip()
-
-def obtener_capitulos(url, capitulos_existentes=[]):
+def obtenerCapitulos(url, capitulosExistentes=[]):
     try:
         response = requests.get(url)
-        response.raise_for_status()
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            chapters = soup.select('li.row')[:4]
+            capitulos = []
+            for chapter in chapters:
+                nombreCap = limpiarTexto(chapter.find('h4').get_text())
+                link = urljoin(url, chapter.find('a')['href'])
 
-        soup = BeautifulSoup(response.text, 'html.parser')
-        chapters = soup.select('li.row')[:4]
-        capitulos = []
+                capituloExistente = next((cap for cap in capitulosExistentes if cap['capitulo'] == nombreCap), None)
+                leido = capituloExistente['leido'] if capituloExistente else False
 
-        for element in chapters:
-            nombre_cap = limpiar_texto(element.select_one('h4').text)
-            link = urljoin(url, element.select_one('a')['href'])
-
-            capitulo_existente = next((cap for cap in capitulos_existentes if cap['capitulo'] == nombre_cap), None)
-            leido = capitulo_existente['leido'] if capitulo_existente else False
-
-            capitulos.append({'capitulo': nombre_cap, 'url': link, 'leido': leido})
-
-        return capitulos
-    except requests.HTTPError as e:
-        print(f"Error al realizar la solicitud HTTP a la URL: {url}")
-        print(f"Error: {e}")
+                capitulos.append({
+                    'capitulo': nombreCap,
+                    'url': link,
+                    'leido': leido
+                })
+            return capitulos
+        else:
+            print(f'Error al realizar la solicitud HTTP a la URL: {url}')
+            return []
+    except Exception as e:
+        print(f'Error al realizar la solicitud HTTP a la URL: {url}')
+        print(f'Error: {str(e)}')
         return []
 
-def add_new_chapters(existing_chapters, new_chapters):
-    for new_chapter in new_chapters:
-        if not any(chapter['url'] == new_chapter['url'] for chapter in existing_chapters):
-            existing_chapters.insert(0, new_chapter)
-    if len(existing_chapters) > 4:
-        existing_chapters.pop()
-    return existing_chapters
+def addNewChapters(existingChapters, newChapters):
+    for newChapter in newChapters:
+        existingChapterIndex = next((i for i, chapter in enumerate(existingChapters) if chapter['url'] == newChapter['url']), -1)
+        if existingChapterIndex == -1:
+            existingChapters.insert(0, newChapter)
+    if len(existingChapters) > 4:
+        existingChapters.pop()
+    return existingChapters
 
-def obtener_animes(urls_listas):
-    animes = []
-    if len(urls_listas) == 1:
-        # Solo hay una URL
-        urls = urls_listas[0]
-        for url in urls:
-            try:
-                new_chapters = obtener_capitulos(url)
-                if new_chapters:
-                    response = requests.get(url)
-                    response.raise_for_status()
+def obtenerMangas(urls, uid, nombreLista):
+    mangas = {}
 
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    titulo = soup.select_one('h1')
-                    imagen = soup.select_one('div.media-left.cover-detail')
+    for url in urls:
+        try:
+            docId = f'{uid}-{limpiarTexto(url)}'
+            docRef = db.collection('mangas').document(docId)
+            docSnap = docRef.get()
 
-                    nombre = limpiar_texto(titulo.text)
-                    imagen_url =urljoin(response.url, imagen.select_one('img')['src'])
-                    url = "https://www.leercapitulo.com/" + url
+            newChapters = obtenerCapitulos(url)
+            if newChapters:
+                response = requests.get(url)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    titulo = soup.select_one('h1').get_text()
+                    imagen = soup.select_one('div.media-left.cover-detail img')['src']
 
-                    anime = {
-                        'nombre': nombre,
-                        'imagenUrl': imagen_url,
-                        'link': new_chapters
-                    }
+                    baseUrl = response.url
+                    nombre = limpiarTexto(titulo)
+                    imagenUrl = urljoin(baseUrl, imagen)
 
-                    animes.append(anime)
+                    if docSnap.exists:
+                        existingChapters = docSnap.get('link', [])
+                        updatedChapters = addNewChapters(existingChapters, newChapters)
 
-            except requests.HTTPError as e:
-                print(f"Error al obtener animes de la URL: {url}")
-                print(f"Error: {e}")
-    else:
-        # Hay múltiples URLs
-        for urls in urls_listas:
-            anime = {
-                'nombre': '',
-                'imagenUrl': '',
-                'link': []
+                        manga = {
+                            'nombre': nombre,
+                            'imagenUrl': docSnap.get('imagenUrl'),
+                            'uid': uid,
+                            'nombreLista': nombreLista,
+                            'link': {}
+                        }
+                        for i, chapter in enumerate(updatedChapters):
+                            manga['link'][str(i)] = {
+                                'capitulo': chapter['capitulo'],
+                                'url': chapter['url'],
+                                'leido': chapter['leido']
+                            }
+                    else:
+                        manga = {
+                            'nombre': nombre,
+                            'imagenUrl': imagenUrl,
+                            'uid': uid,
+                            'link': {}
+                        }
+                        for i, chapter in enumerate(newChapters):
+                            manga['link'][str(i)] = {
+                                'capitulo': chapter['capitulo'],
+                                'url': chapter['url'],
+                                'leido': chapter['leido']
+                            }
+
+                    mangas[nombre] = manga
+        except Exception as e:
+            print(f'Error al obtener mangas de la URL: {url}')
+            print(f'Error: {str(e)}')
+
+    return list(mangas.values())
+
+def actualizarResultadosFirebase(mangas, uid, nombreLista):
+    try:
+        for manga in mangas:
+            docId = f'{uid}-{manga["nombre"]}'
+            docRef = db.collection('mangas').document(docId)
+
+            docData = {
+                'nombre': manga['nombre'],
+                'imagenUrl': manga['imagenUrl'],
+                'uid': uid,
+                'listaNombre': nombreLista,  # Campo modificado
+                'link': manga['link']
             }
 
-            for url in urls:
-                try:
-                    new_chapters = obtener_capitulos(url)
-                    if new_chapters:
-                        response = requests.get(url)
-                        response.raise_for_status()
+            docRef.set(docData)
 
-                        soup = BeautifulSoup(response.text, 'html.parser')
-                        titulo = soup.select_one('h1')
-                        imagen = soup.select_one('div.media-left.cover-detail')
+        print(f'Resultados guardados en Firebase para el usuario {uid}')
+    except Exception as e:
+        print(f'Error al guardar los resultados en Firebase para el usuario {uid}')
+        print(f'Error: {str(e)}')
 
-                        nombre = limpiar_texto(titulo.text)
-                        imagen_url =  urljoin(response.url, imagen.select_one('img')['src'])
-                        url = "https://www.leercapitulo.com/" + url
 
-                        anime['nombre'] = nombre
-                        anime['imagenUrl'] = imagen_url
-                        anime['link'] = new_chapters
+@app.route('/api/mangas', methods=['POST'])
+def obtenerMangasHandler():
+    try:
+        data = request.get_json()
+        uid = data.get('uid')
+        urls = data.get('urls', [])
+        nombreLista = data.get('listaNombre')
 
-                except requests.HTTPError as e:
-                    print(f"Error al obtener animes de la URL: {url}")
-                    print(f"Error: {e}")
+        print(f'Obteniendo mangas para el usuario {uid}')
+        print(f'URLs: {urls}')
 
-            animes.append(anime)
+        if not uid or not urls or not nombreLista:
+            return jsonify({'error': 'Falta el UID, las URLs o el nombre de la lista'}), 400
 
-    return animes
+        mangas = obtenerMangas(urls, uid, nombreLista)
+        actualizarResultadosFirebase(mangas, uid, nombreLista)
 
-if __name__ == "__main__":
-    app.run(debug=False)
+        return jsonify({'message': 'Mangas actualizados correctamente'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
